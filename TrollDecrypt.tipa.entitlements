@@ -1,0 +1,48 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+    <dict>
+        <!--
+            TIPA (TrollStore) entitlements.
+
+            This is deliberately the ORIGINAL upstream TrollDecrypt entitlement
+            set. TrollStore re-signs the .tipa and the bootstrap (AMFI) rejects
+            the extra FoulDecrypt entitlements (get-task-allow,
+            dynamic-codesigning, com.apple.private.cs.debugger,
+            com.apple.private.skip-library-validation) before dyld ever runs,
+            producing "RBSRequestErrorDomain code 5: Launch failed" with pid -1.
+
+            A TrollStore app runs on stock iOS where kernel R/W / mremap_encrypted
+            cannot work anyway, so those entitlements are unnecessary here — the
+            original task_for_pid path works with this set.
+        -->
+        <key>platform-application</key>
+        <true/>
+        <key>com.apple.private.security.no-sandbox</key>
+        <true/>
+        <key>com.apple.private.security.storage.AppBundles</key>
+        <true/>
+        <key>task_for_pid-allow</key>
+        <true/>
+        <key>com.apple.springboard.launchapplications</key>
+        <true/>
+        <key>com.apple.private.xpc.domain-extension</key>
+        <true/>
+        <key>com.apple.private.xpc.domain-extension.proxy</key>
+        <true/>
+        <key>com.apple.private.xpc.launchd.job-manager</key>
+        <string>com.apple.runningboard</string>
+        <key>com.apple.runningboard.process-state</key>
+        <true/>
+        <key>com.apple.security.iokit-user-client-class</key>
+        <array>
+            <string>AGXDeviceUserClient</string>
+            <string>AGXGLContext</string>
+            <string>IOAccelDevice</string>
+            <string>IOAccelDevice2</string>
+            <string>IOAccelSharedUserClient</string>
+            <string>IOAccelSharedUserClient2</string>
+            <string>IOSurfaceRootUserClient</string>
+        </array>
+    </dict>
+</plist>

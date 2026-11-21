@@ -41,7 +41,15 @@ TrollDecrypt_LDFLAGS += -Wl,-rpath,@executable_path/Frameworks
 TrollDecrypt_EXTRA_FRAMEWORKS += SSZipArchive
 
 TrollDecrypt_OBJCFLAGS = -include shared.h
+# The .tipa is installed by TrollStore, which re-signs it and rejects the extra
+# FoulDecrypt/debug entitlements at AMFI bootstrap (pid -1, "Launch failed").
+# TrollStore apps cannot use kernel R/W on stock iOS anyway, so the .tipa uses
+# the original upstream entitlement set; the .deb builds keep the full set.
+ifeq ($(PACKAGE_TIPA),1)
+TrollDecrypt_CODESIGN_FLAGS = -STrollDecrypt.tipa.entitlements
+else
 TrollDecrypt_CODESIGN_FLAGS = -STrollDecrypt.entitlements
+endif
 
 internal-stage::
 	echo "Moving SSZipArchive.framework into app bundle"
