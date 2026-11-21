@@ -78,7 +78,9 @@ int rw_prov_init() {
         td_krw_log("kbase() failed; disabling kerninfra");
         dlclose(s_td_krw_handle);
         s_td_krw_handle = NULL;
-        s_td_krw_kbase = s_td_krw_kread = s_td_krw_kwrite = NULL;
+        s_td_krw_kbase = NULL;
+        s_td_krw_kread = NULL;
+        s_td_krw_kwrite = NULL;
         return 1;
     }
 
