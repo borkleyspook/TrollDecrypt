@@ -6,30 +6,35 @@ export THEOS_PACKAGE_SCHEME = rootless
 export USE_LIBKRW = 1
 
 include $(THEOS)/makefiles/common.mk
-SUBPROJECTS += deps/SSZipArchive kerninfra
+SUBPROJECTS += deps/SSZipArchive
 include $(THEOS_MAKE_PATH)/aggregate.mk
 
 APPLICATION_NAME = TrollDecrypt
 
-# Exclude kerninfra (built separately as a static subproject) from the app's
-# own source list, and include Objective-C++ sources for FoulDecrypt.mm.
+# App sources (exclude vendored dirs; include ObjC++ for FoulDecrypt.mm).
 TrollDecrypt_FILES = $(shell find . -path "*/.theos/*" -prune -o -path "./theos/*" -prune -o -path "./deps/SSZipArchive/*" -prune -o -path "./kerninfra/*" -prune -o \( -name "*.m" -o -name "*.mm" -o -name "*.c" -o -name "*.cpp" \) -print)
+# Compile kerninfra directly into the app (static subproject linking was not
+# resolving its symbols at app link time). Only the libkrw provider files.
+TrollDecrypt_FILES += kerninfra/patchfinder/libdimentio.c \
+                     kerninfra/rw_wrap/rw_wrap.cpp \
+                     kerninfra/kern_func.cpp \
+                     kerninfra/kerninfra.mm \
+                     kerninfra/rw_prov/rw_prov_libkrw/rw_prov_libkrw.c
 
 TrollDecrypt_FRAMEWORKS = UIKit CoreGraphics MobileCoreServices Security IOKit
 TrollDecrypt_PRIVATE_FRAMEWORKS = AppServerSupport RunningBoardServices
 # iOS 14 deployment target + newer libc++ (<format>) + Clang modules makes the
 # whole `std` module fail to build. FoulDecrypt does not use std::format.
-TrollDecrypt_CFLAGS = -fobjc-arc -fno-modules -D_LIBCPP_DISABLE_AVAILABILITY -I./include -I./deps -I./kerninfra -I./kerninfra/includes
+TrollDecrypt_CFLAGS = -fobjc-arc -fno-modules -D_LIBCPP_DISABLE_AVAILABILITY -DUSE_LIBKRW -I./include -I./deps -I./kerninfra -I./kerninfra/includes
 # kerninfra requires C++20; .mm files are built with CCFLAGS as well.
-TrollDecrypt_CCFLAGS = -std=c++2a -fno-modules -D_LIBCPP_DISABLE_AVAILABILITY -Wno-deprecated-literal-operator -fobjc-arc -Wno-unused-variable -I./include -I./deps -I./kerninfra -I./kerninfra/includes
+TrollDecrypt_CCFLAGS = -std=c++2a -fno-modules -D_LIBCPP_DISABLE_AVAILABILITY -Wno-deprecated-literal-operator -fobjc-arc -Wno-unused-variable -DUSE_LIBKRW -I./include -I./deps -I./kerninfra -I./kerninfra/includes
 
-# The kerninfra subproject is linked automatically by Theos. Its stub for
-# libkrw lives in kerninfra/libs, so make that directory searchable here too.
-TrollDecrypt_LDFLAGS += -Lkerninfra/libs
-# Static kerninfra/libdimentio needs libcompression and libkrw symbols resolved here.
-TrollDecrypt_LDFLAGS += -lcompression -lkrw
+# libkrw's tbd lives in kerninfra/libs; libdimentio needs libcompression.
+TrollDecrypt_LDFLAGS += -Lkerninfra/libs -lcompression -lkrw
 TrollDecrypt_LDFLAGS += -F$(THEOS_OBJ_DIR)
 TrollDecrypt_LDFLAGS += -Wl,-rpath,@executable_path/Frameworks
+# Rootless jailbreaks install libkrw into /var/jb/usr/lib.
+TrollDecrypt_LDFLAGS += -Wl,-rpath,/var/jb/usr/lib
 TrollDecrypt_EXTRA_FRAMEWORKS += SSZipArchive
 
 TrollDecrypt_OBJCFLAGS = -include shared.h

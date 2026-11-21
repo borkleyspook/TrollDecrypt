@@ -20,6 +20,10 @@
 #import <objc/objc.h>   // BOOL, YES, NO
 @class NSString;
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 /// Lazily initializes the kerninfra kernel R/W backend (libkrw provider).
 /// Returns YES if kernel R/W is available, NO otherwise.
 BOOL TDFoulDecryptKernelAvailable(void);
@@ -32,3 +36,7 @@ BOOL TDFoulDecryptKernelAvailable(void);
 /// Returns YES on success, NO on any failure. On failure the caller should
 /// fall back to the live-process (task_for_pid) decryption path.
 BOOL TDDecryptMachOWithFoulDecrypt(NSString *inputPath, NSString *outputPath);
+
+#ifdef __cplusplus
+}
+#endif
