@@ -21,7 +21,7 @@ TrollDecrypt_PRIVATE_FRAMEWORKS = AppServerSupport RunningBoardServices
 # whole `std` module fail to build. FoulDecrypt does not use std::format.
 TrollDecrypt_CFLAGS = -fobjc-arc -fno-modules -D_LIBCPP_DISABLE_AVAILABILITY -I./include -I./deps -I./kerninfra -I./kerninfra/includes
 # kerninfra requires C++20; .mm files are built with CCFLAGS as well.
-TrollDecrypt_CCFLAGS = -std=c++2a -fno-modules -D_LIBCPP_DISABLE_AVAILABILITY -fobjc-arc -Wno-unused-variable -I./include -I./deps -I./kerninfra -I./kerninfra/includes
+TrollDecrypt_CCFLAGS = -std=c++2a -fno-modules -D_LIBCPP_DISABLE_AVAILABILITY -Wno-deprecated-literal-operator -fobjc-arc -Wno-unused-variable -I./include -I./deps -I./kerninfra -I./kerninfra/includes
 
 # The kerninfra subproject is linked automatically by Theos. Its stub for
 # libkrw lives in kerninfra/libs, so make that directory searchable here too.
