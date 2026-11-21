@@ -32,14 +32,12 @@ TrollDecrypt_CFLAGS = -fobjc-arc -fno-modules -D_LIBCPP_DISABLE_AVAILABILITY -DU
 # kerninfra requires C++20; .mm files are built with CCFLAGS as well.
 TrollDecrypt_CCFLAGS = -std=c++2a -fno-modules -D_LIBCPP_DISABLE_AVAILABILITY -Wno-deprecated-literal-operator -fobjc-arc -Wno-unused-variable -DUSE_LIBKRW -I./include -I./deps -I./kerninfra -I./kerninfra/includes
 
-# libkrw's tbd lives in kerninfra/libs; libdimentio needs libcompression.
-# Weak-link libkrw so the app still launches on devices without it. The
-# FoulDecrypt backend then fails gracefully and falls back to task_for_pid.
-TrollDecrypt_LDFLAGS += -Lkerninfra/libs -lcompression -Wl,-weak-lkrw
+# libdimentio needs libcompression. libkrw is now dlopen()ed at runtime
+# (see rw_prov_libkrw.c), so there is NO link-time/libkrw load command —
+# the .tipa can launch on stock iOS / TrollStore without a jailbreak dylib.
+TrollDecrypt_LDFLAGS += -lcompression
 TrollDecrypt_LDFLAGS += -F$(THEOS_OBJ_DIR)
 TrollDecrypt_LDFLAGS += -Wl,-rpath,@executable_path/Frameworks
-# Rootless jailbreaks install libkrw into /var/jb/usr/lib.
-TrollDecrypt_LDFLAGS += -Wl,-rpath,/var/jb/usr/lib
 TrollDecrypt_EXTRA_FRAMEWORKS += SSZipArchive
 
 TrollDecrypt_OBJCFLAGS = -include shared.h
