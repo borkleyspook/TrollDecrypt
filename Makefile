@@ -17,9 +17,11 @@ TrollDecrypt_FILES = $(shell find . -path "*/.theos/*" -prune -o -path "./deps/S
 
 TrollDecrypt_FRAMEWORKS = UIKit CoreGraphics MobileCoreServices Security IOKit
 TrollDecrypt_PRIVATE_FRAMEWORKS = AppServerSupport RunningBoardServices
-TrollDecrypt_CFLAGS = -fobjc-arc -I./include -I./deps -I./kerninfra -I./kerninfra/includes
+# iOS 14 deployment target + newer libc++ (<format>) + Clang modules makes the
+# whole `std` module fail to build. FoulDecrypt does not use std::format.
+TrollDecrypt_CFLAGS = -fobjc-arc -fno-modules -D_LIBCPP_DISABLE_AVAILABILITY -I./include -I./deps -I./kerninfra -I./kerninfra/includes
 # kerninfra requires C++20; .mm files are built with CCFLAGS as well.
-TrollDecrypt_CCFLAGS = -std=c++2a -fobjc-arc -Wno-unused-variable -I./include -I./deps -I./kerninfra -I./kerninfra/includes
+TrollDecrypt_CCFLAGS = -std=c++2a -fno-modules -D_LIBCPP_DISABLE_AVAILABILITY -fobjc-arc -Wno-unused-variable -I./include -I./deps -I./kerninfra -I./kerninfra/includes
 
 # The kerninfra subproject is linked automatically by Theos. Its stub for
 # libkrw lives in kerninfra/libs, so make that directory searchable here too.

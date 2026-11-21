@@ -15,8 +15,11 @@ LIB_DIR := lib
 kerninfra_LINKAGE_TYPE = static
 
 kerninfra_FILES = patchfinder/libdimentio.c rw_wrap/rw_wrap.cpp kern_func.cpp kerninfra.mm
-kerninfra_CFLAGS = -fobjc-arc -Iincludes
-kerninfra_CCFLAGS = -std=c++2a -fvisibility=hidden
+# iOS 14 deployment target + newer libc++ (<format>) + Clang modules makes the
+# whole `std` module fail to build because std::format is marked unavailable.
+# kerninfra does not use std::format, so disable modules and availability checks.
+kerninfra_CFLAGS = -fobjc-arc -fno-modules -D_LIBCPP_DISABLE_AVAILABILITY -Iincludes
+kerninfra_CCFLAGS = -std=c++2a -fno-modules -D_LIBCPP_DISABLE_AVAILABILITY -fvisibility=hidden
 kerninfra_FRAMEWORKS = IOKit
 #kerninfra_INSTALL_PATH = /usr/local/lib
 #kerninfra_LINKAGE_TYPE = static
