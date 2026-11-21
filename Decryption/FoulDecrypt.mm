@@ -33,6 +33,8 @@
 #include <assert.h>
 #include <errno.h>
 #include <fcntl.h>
+#include <signal.h>
+#include <spawn.h>
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -40,6 +42,7 @@
 #include <string.h>
 #include <sys/mman.h>
 #include <sys/stat.h>
+#include <sys/wait.h>
 #include <unistd.h>
 
 #include <libkern/OSByteOrder.h>
@@ -66,6 +69,51 @@ static BOOL td_fd_verbose = YES;
 #ifndef MIN
 #define MIN(a, b) (((a) < (b)) ? (a) : (b))
 #endif
+
+// ---------------------------------------------------------------------------
+// Prime the FairPlay/apple_protect pager by executing the target binary once.
+//
+// mremap_encrypted() only succeeds on pages whose vnode has already had its
+// encryption set up by dyld. In practice this means the Mach-O must have been
+// executed at least once first — a direct `posix_spawn` is enough; the process
+// aborts almost immediately (BPT trap / code-signing failure), but the act of
+// exec'ing it maps the encrypted segments and initialises the pager that
+// mremap_encrypted later relies on. This is the documented upstream workaround
+// for the "mremap_encrypted: Operation not permitted" (EPERM) failure.
+//
+// Without this, apps that TrollDecrypt could not launch (so dyld never mapped
+// them) always failed with EPERM and there was no valid pid for the
+// task_for_pid fallback either. Priming makes FoulDecrypt genuinely static.
+// ---------------------------------------------------------------------------
+static void td_fd_primeEncryptedBinary(const char *path) {
+    pid_t child = -1;
+    char *const argv[] = { (char *)path, NULL };
+    extern char **environ;
+
+    int rc = posix_spawn(&child, path, NULL, NULL, argv, environ);
+    if (rc != 0) {
+        FDLOG(@"prime: posix_spawn(%s) failed: %s (continuing anyway)", path, strerror(rc));
+        return;
+    }
+
+    // The child is expected to die almost immediately (BPT trap). Reap it so it
+    // does not linger; the encrypted mapping it created persists in the kernel
+    // pager after it exits. Bound the wait in case it does not exit on its own.
+    int status = 0;
+    const int kMaxWaitMs = 1000;
+    for (int elapsed = 0; elapsed < kMaxWaitMs; elapsed += 20) {
+        pid_t r = waitpid(child, &status, WNOHANG);
+        if (r == child || r == -1) break;
+        usleep(20 * 1000);
+    }
+    // Still running? Kill it — we only needed the exec to initialise the pager.
+    if (waitpid(child, &status, WNOHANG) == 0) {
+        kill(child, SIGKILL);
+        waitpid(child, &status, 0);
+    }
+    FDLOG(@"prime: executed %s (pid %d, status 0x%x) to initialise encrypted pager",
+          path, child, status);
+}
 
 // ---------------------------------------------------------------------------
 // File mapping helper (ported from main.cpp's map()).
@@ -329,6 +377,12 @@ static int td_fd_decryptMachoSlice(int f, uint8_t *inputData, uint8_t *outputDat
 // Decrypt a whole Mach-O file (thin or fat) (ported from decrypt_macho()).
 // ---------------------------------------------------------------------------
 static int td_fd_decryptMachO(const char *inputFile, const char *outputFile) {
+    // mremap_encrypted() needs the encrypted pager initialised by at least one
+    // prior exec of this Mach-O. Prime it before touching the file. Safe to
+    // call repeatedly; the child aborts immediately and is reaped.
+    FDLOG(@"priming encrypted pager for: %s", inputFile);
+    td_fd_primeEncryptedBinary(inputFile);
+
     FDLOG(@"mapping input: %s", inputFile);
     size_t baseSize = 0;
     int f = -1;
