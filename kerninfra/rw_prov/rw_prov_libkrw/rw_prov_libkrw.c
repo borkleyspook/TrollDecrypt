@@ -39,5 +39,16 @@ void kernel_getbase(uint64_t *retkbase, uint64_t *retkslide) {
 }
 
 int rw_prov_init() {
+    // libkrw is weak-linked. If it is missing or unusable on this device its
+    // symbols resolve to NULL. Fail cleanly so init_kerninfra() reports the
+    // error and FoulDecrypt falls back to task_for_pid instead of calling a
+    // NULL function pointer.
+    if (!kbase || !kread || !kwrite) {
+        return 1;
+    }
+    uint64_t kbaseAddr = 0;
+    if (kbase(&kbaseAddr) != 0 || kbaseAddr == 0) {
+        return 1;
+    }
     return 0;
 }
