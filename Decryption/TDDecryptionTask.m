@@ -5,6 +5,7 @@
 
 #import "LaunchdResponse.h"
 #import "MemoryUtilities.h"
+#import "FoulDecrypt.h"
 #import <objc/runtime.h>
 #import <SSZipArchive/SSZipArchive.h>
 // #import <SSZipArchive.h>
@@ -222,6 +223,16 @@ TDDecryptionTaskOptions TDDecryptionTaskDefaultOptions(void) {
 }
 
 - (BOOL)decryptImageAtPath:(NSString *)imagePath forPID:(pid_t)pid outputPath:(NSString *)outputPath {
+    // FoulDecrypt15 static method first. It decrypts the encrypted Mach-O
+    // directly from disk with mremap_encrypted() (and kerninfra kernel R/W when
+    // cryptoff is not 16K aligned), so it does not require task_for_pid or a
+    // fully materialized decrypted image in the target process.
+    if (TDDecryptMachOWithFoulDecrypt(imagePath, outputPath)) {
+        NSLog(@"FoulDecrypt succeeded for %@", imagePath);
+        return YES;
+    }
+    NSLog(@"FoulDecrypt failed for %@; falling back to task_for_pid decryption", imagePath);
+
     vm_map_t task = 0;
     if (task_for_pid(mach_task_self(), pid, &task)) {
         NSLog(@"failed to get task for pid %d", pid);

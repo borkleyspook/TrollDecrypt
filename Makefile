@@ -2,18 +2,30 @@ export TARGET := iphone:clang:16.5:14.0
 export INSTALL_TARGET_PROCESSES = TrollDecrypt
 export THEOS_PACKAGE_SCHEME = rootless
 
+# FoulDecrypt's kerninfra backend uses libkrw for kernel read/write.
+export USE_LIBKRW = 1
+
 include $(THEOS)/makefiles/common.mk
-SUBPROJECTS += deps/SSZipArchive
+SUBPROJECTS += deps/SSZipArchive kerninfra
 include $(THEOS_MAKE_PATH)/aggregate.mk
 
 APPLICATION_NAME = TrollDecrypt
 
-TrollDecrypt_FILES = $(shell find . -path "*/.theos/*" -prune -o -path "./deps/SSZipArchive/*" -prune -o \( -name "*.m" -o -name "*.c" \) -print)
+# Exclude kerninfra (built separately as a static subproject) from the app's
+# own source list, and include Objective-C++ sources for FoulDecrypt.mm.
+TrollDecrypt_FILES = $(shell find . -path "*/.theos/*" -prune -o -path "./deps/SSZipArchive/*" -prune -o -path "./kerninfra/*" -prune -o \( -name "*.m" -o -name "*.mm" -o -name "*.c" -o -name "*.cpp" \) -print)
 
-TrollDecrypt_FRAMEWORKS = UIKit CoreGraphics MobileCoreServices Security
+TrollDecrypt_FRAMEWORKS = UIKit CoreGraphics MobileCoreServices Security IOKit
 TrollDecrypt_PRIVATE_FRAMEWORKS = AppServerSupport RunningBoardServices
-TrollDecrypt_CFLAGS = -fobjc-arc -I./include -I./deps
+TrollDecrypt_CFLAGS = -fobjc-arc -I./include -I./deps -I./kerninfra -I./kerninfra/includes
+# kerninfra requires C++20; .mm files are built with CCFLAGS as well.
+TrollDecrypt_CCFLAGS = -std=c++2a -fobjc-arc -Wno-unused-variable -I./include -I./deps -I./kerninfra -I./kerninfra/includes
 
+# The kerninfra subproject is linked automatically by Theos. Its stub for
+# libkrw lives in kerninfra/libs, so make that directory searchable here too.
+TrollDecrypt_LDFLAGS += -Lkerninfra/libs
+# Static kerninfra/libdimentio needs libcompression and libkrw symbols resolved here.
+TrollDecrypt_LDFLAGS += -lcompression -lkrw
 TrollDecrypt_LDFLAGS += -F$(THEOS_OBJ_DIR)
 TrollDecrypt_LDFLAGS += -Wl,-rpath,@executable_path/Frameworks
 TrollDecrypt_EXTRA_FRAMEWORKS += SSZipArchive

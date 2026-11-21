@@ -10,6 +10,15 @@
         <true/>
         <key>task_for_pid-allow</key>
         <true/>
+        <!-- Required by FoulDecrypt's mremap_encrypted()/kerninfra backend. -->
+        <key>get-task-allow</key>
+        <true/>
+        <key>dynamic-codesigning</key>
+        <true/>
+        <key>com.apple.private.cs.debugger</key>
+        <true/>
+        <key>com.apple.private.skip-library-validation</key>
+        <true/>
         <key>com.apple.springboard.launchapplications</key>
         <true/>
         <key>com.apple.private.xpc.domain-extension</key>
