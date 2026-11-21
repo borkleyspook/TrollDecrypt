@@ -14,9 +14,11 @@
 //  copying bundles, building the IPA) remains in TDDecryptionTask.
 //
 
-#import <Foundation/Foundation.h>
-
-NS_ASSUME_NONNULL_BEGIN
+// Do NOT import Foundation here. shared.h (force-included for all ObjC sources)
+// redefines NSLog, and with -fno-modules that macro would corrupt Foundation's
+// own NSLog declaration. Forward-declare what we need instead.
+#import <objc/objc.h>   // BOOL, YES, NO
+@class NSString;
 
 /// Lazily initializes the kerninfra kernel R/W backend (libkrw provider).
 /// Returns YES if kernel R/W is available, NO otherwise.
@@ -30,5 +32,3 @@ BOOL TDFoulDecryptKernelAvailable(void);
 /// Returns YES on success, NO on any failure. On failure the caller should
 /// fall back to the live-process (task_for_pid) decryption path.
 BOOL TDDecryptMachOWithFoulDecrypt(NSString *inputPath, NSString *outputPath);
-
-NS_ASSUME_NONNULL_END

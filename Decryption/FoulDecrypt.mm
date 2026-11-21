@@ -23,6 +23,13 @@
 
 #import "FoulDecrypt.h"
 
+// shared.h (force-included via OBJCFLAGS) redefines NSLog. With -fno-modules,
+// Foundation is included textually, so the macro would mangle Foundation's own
+// NSLog declaration. Undefine it here, then import Foundation normally.
+// FDLOG below provides its own [FoulDecrypt] prefix, so nothing is lost.
+#undef NSLog
+#import <Foundation/Foundation.h>
+
 #include <assert.h>
 #include <errno.h>
 #include <fcntl.h>

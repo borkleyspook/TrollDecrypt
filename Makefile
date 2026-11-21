@@ -13,7 +13,7 @@ APPLICATION_NAME = TrollDecrypt
 
 # Exclude kerninfra (built separately as a static subproject) from the app's
 # own source list, and include Objective-C++ sources for FoulDecrypt.mm.
-TrollDecrypt_FILES = $(shell find . -path "*/.theos/*" -prune -o -path "./deps/SSZipArchive/*" -prune -o -path "./kerninfra/*" -prune -o \( -name "*.m" -o -name "*.mm" -o -name "*.c" -o -name "*.cpp" \) -print)
+TrollDecrypt_FILES = $(shell find . -path "*/.theos/*" -prune -o -path "./theos/*" -prune -o -path "./deps/SSZipArchive/*" -prune -o -path "./kerninfra/*" -prune -o \( -name "*.m" -o -name "*.mm" -o -name "*.c" -o -name "*.cpp" \) -print)
 
 TrollDecrypt_FRAMEWORKS = UIKit CoreGraphics MobileCoreServices Security IOKit
 TrollDecrypt_PRIVATE_FRAMEWORKS = AppServerSupport RunningBoardServices
