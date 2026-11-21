@@ -1,0 +1,82 @@
+name: Build TrollDecrypt
+
+on:
+  push:
+    branches:
+      - '**'
+  pull_request:
+    branches:
+      - '**'
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  THEOS: ${{ github.workspace }}/theos
+  # The Makefile hardcodes TARGET iphone:clang:16.5:14.0, so CI must provide
+  # the matching patched SDK (private framework .tbds included).
+  IOS_SDK: iPhoneOS16.5.sdk
+  IOS_SDK_TAG: master-146e41f
+
+jobs:
+  build:
+    runs-on: macos-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Select Xcode
+        uses: maxim-lobanov/setup-xcode@v1
+        with:
+          xcode-version: latest-stable
+
+      - name: Install build dependencies
+        run: |
+          brew install ldid make dpkg xz
+          # Theos requires GNU make; put Homebrew's GNU make first on PATH so
+          # both `make` (used by build_release.sh) and `gmake` resolve to it.
+          echo "$(brew --prefix make)/libexec/gnubin" >> "$GITHUB_PATH"
+
+      - name: Cache Theos and iOS SDK
+        id: theos-cache
+        uses: actions/cache@v4
+        with:
+          path: ${{ env.THEOS }}
+          key: ${{ runner.os }}-theos-${{ env.IOS_SDK }}-v1
+
+      - name: Install Theos
+        if: steps.theos-cache.outputs.cache-hit != 'true'
+        run: |
+          git clone --recursive https://github.com/theos/theos.git "$THEOS"
+
+      - name: Install iOS SDK
+        if: steps.theos-cache.outputs.cache-hit != 'true'
+        run: |
+          mkdir -p "$THEOS/sdks"
+          curl -fsSL \
+            "https://github.com/theos/sdks/releases/download/${IOS_SDK_TAG}/${IOS_SDK}.tar.xz" \
+            -o "${RUNNER_TEMP}/${IOS_SDK}.tar.xz"
+          tar -xJf "${RUNNER_TEMP}/${IOS_SDK}.tar.xz" -C "$THEOS/sdks"
+          rm -f "${RUNNER_TEMP}/${IOS_SDK}.tar.xz"
+          test -d "$THEOS/sdks/$IOS_SDK"
+
+      - name: Build (rootful package, rootless package, and TrollStore .tipa)
+        run: |
+          # Refuse to continue if the SDK or Theos is missing after a cache hit.
+          test -f "$THEOS/makefiles/common.mk"
+          test -d "$THEOS/sdks/$IOS_SDK"
+          chmod +x ./build_release.sh
+          ./build_release.sh
+
+      - name: List artifacts
+        run: ls -lh dist/
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: TrollDecrypt
+          path: dist/*
+          if-no-files-found: error
