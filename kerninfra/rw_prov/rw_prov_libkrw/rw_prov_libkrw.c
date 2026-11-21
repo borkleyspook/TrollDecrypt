@@ -43,11 +43,18 @@ int rw_prov_init() {
     // symbols resolve to NULL. Fail cleanly so init_kerninfra() reports the
     // error and FoulDecrypt falls back to task_for_pid instead of calling a
     // NULL function pointer.
-    if (!kbase || !kread || !kwrite) {
+    // Use volatile function-pointer locals: checking a bare function name in a
+    // boolean context triggers -Wpointer-bool-conversion because Clang assumes
+    // a function's address is always non-NULL. Volatile forces a real runtime
+    // NULL check of the weak symbol.
+    int (* volatile p_kbase)(uint64_t *) = &kbase;
+    int (* volatile p_kread)(uint64_t, void *, size_t) = &kread;
+    int (* volatile p_kwrite)(void *, uint64_t, size_t) = &kwrite;
+    if (!p_kbase || !p_kread || !p_kwrite) {
         return 1;
     }
     uint64_t kbaseAddr = 0;
-    if (kbase(&kbaseAddr) != 0 || kbaseAddr == 0) {
+    if (p_kbase(&kbaseAddr) != 0 || kbaseAddr == 0) {
         return 1;
     }
     return 0;
