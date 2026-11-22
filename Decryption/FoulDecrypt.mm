@@ -42,6 +42,7 @@
 #include <string.h>
 #include <sys/mman.h>
 #include <sys/stat.h>
+#include <sys/fcntl.h>
 #include <sys/wait.h>
 #include <unistd.h>
 
@@ -70,50 +71,12 @@ static BOOL td_fd_verbose = YES;
 #define MIN(a, b) (((a) < (b)) ? (a) : (b))
 #endif
 
-// ---------------------------------------------------------------------------
-// Prime the FairPlay/apple_protect pager by executing the target binary once.
-//
-// mremap_encrypted() only succeeds on pages whose vnode has already had its
-// encryption set up by dyld. In practice this means the Mach-O must have been
-// executed at least once first — a direct `posix_spawn` is enough; the process
-// aborts almost immediately (BPT trap / code-signing failure), but the act of
-// exec'ing it maps the encrypted segments and initialises the pager that
-// mremap_encrypted later relies on. This is the documented upstream workaround
-// for the "mremap_encrypted: Operation not permitted" (EPERM) failure.
-//
-// Without this, apps that TrollDecrypt could not launch (so dyld never mapped
-// them) always failed with EPERM and there was no valid pid for the
-// task_for_pid fallback either. Priming makes FoulDecrypt genuinely static.
-// ---------------------------------------------------------------------------
-static void td_fd_primeEncryptedBinary(const char *path) {
-    pid_t child = -1;
-    char *const argv[] = { (char *)path, NULL };
-    extern char **environ;
-
-    int rc = posix_spawn(&child, path, NULL, NULL, argv, environ);
-    if (rc != 0) {
-        FDLOG(@"prime: posix_spawn(%s) failed: %s (continuing anyway)", path, strerror(rc));
-        return;
-    }
-
-    // The child is expected to die almost immediately (BPT trap). Reap it so it
-    // does not linger; the encrypted mapping it created persists in the kernel
-    // pager after it exits. Bound the wait in case it does not exit on its own.
-    int status = 0;
-    const int kMaxWaitMs = 1000;
-    for (int elapsed = 0; elapsed < kMaxWaitMs; elapsed += 20) {
-        pid_t r = waitpid(child, &status, WNOHANG);
-        if (r == child || r == -1) break;
-        usleep(20 * 1000);
-    }
-    // Still running? Kill it — we only needed the exec to initialise the pager.
-    if (waitpid(child, &status, WNOHANG) == 0) {
-        kill(child, SIGKILL);
-        waitpid(child, &status, 0);
-    }
-    FDLOG(@"prime: executed %s (pid %d, status 0x%x) to initialise encrypted pager",
-          path, child, status);
-}
+// NOTE: No "prime by executing the binary" step is needed. The old port tried
+// posix_spawn() to initialise the FairPlay pager, but that fails with ENOEXEC
+// for apps TrollDecrypt cannot launch. mremap_encrypted() has no privilege
+// check and does not require the app to have been executed: fairplayd locates
+// the license purely by the SC_Info/*.sinf file next to the input binary. See
+// the mode-based attempt code in td_fd_unprotect() below.
 
 // ---------------------------------------------------------------------------
 // File mapping helper (ported from main.cpp's map()).
@@ -201,10 +164,89 @@ static int td_fd_mremapEncrypted(void *base, size_t cryptsize, uint32_t cryptid,
 }
 
 // ---------------------------------------------------------------------------
+// One FairPlay attempt.
+//
+// cryptid=2 (CRYPTID_MODEL_ENCRYPTION) is the crucial detail: inside
+// vm_map_apple_protected, cryptid only selects a code path, and value 2 skips
+// the requirement that the mapping be PROT_EXEC. That means a plain
+// mmap(PROT_READ) is enough and AMFI library validation is never involved.
+// The old port always used cryptid=1 + PROT_READ|PROT_EXEC, which is exactly
+// what dyld does and what produces EPERM when the app cannot be launched.
+//
+// mremap_encrypted itself has no privilege check (no special entitlements),
+// and fairplayd finds the licence by the SC_Info/*.sinf file next to the
+// input path — so no priming exec is necessary.
+// ---------------------------------------------------------------------------
+static int td_fd_attemptDecrypt(int f, size_t sliceOff, uint32_t cryptoff, uint32_t cryptsize,
+                                uint32_t csOff, uint32_t csSize,
+                                uint32_t cryptid, bool useExec, bool addSigs,
+                                uint32_t cpuType, uint32_t cpuSubType,
+                                uint8_t *outBuf, const uint8_t *origBuf) {
+    size_t mapLen = ((size_t)cryptoff + cryptsize + TD_FD_PAGE_SIZE - 1) & ~(TD_FD_PAGE_SIZE - 1);
+    int prot = PROT_READ | (useExec ? PROT_EXEC : 0);
+    void *base = td_fd_mmap(NULL, mapLen, prot, MAP_PRIVATE, f, sliceOff);
+    if (base == MAP_FAILED) return -1;
+
+#ifdef F_ADDFILESIGS_RETURN
+    if (addSigs && csSize) {
+        struct fsignatures fs = {0};
+        fs.fs_file_start = (off_t)sliceOff;
+        fs.fs_blob_start = (void *)(uintptr_t)csOff;
+        fs.fs_blob_size = csSize;
+        if (fcntl(f, F_ADDFILESIGS_RETURN, &fs) == -1) {
+            FDLOG(@"F_ADDFILESIGS_RETURN failed: %s (continuing)", strerror(errno));
+        }
+    }
+#else
+    (void)addSigs; (void)csOff; (void)csSize;
+#endif
+
+    uint8_t *cryptBase = (uint8_t *)base + cryptoff;
+    errno = 0;
+    int ret = mremap_encrypted(cryptBase, cryptsize, cryptid, cpuType, cpuSubType);
+    if (ret != 0) {
+        FDLOG(@"mode(cryptid=%u exec=%d sigs=%d): mremap_encrypted failed: %d (%s)",
+              cryptid, useExec ? 1 : 0, addSigs ? 1 : 0, ret, strerror(errno));
+        munmap(base, mapLen);
+        return -1;
+    }
+
+    // Read the decrypted pages with vm_read_overwrite so a page-in failure is
+    // reported as a kern_return_t instead of raising SIGBUS.
+    size_t pages = (cryptsize + TD_FD_PAGE_SIZE - 1) / TD_FD_PAGE_SIZE;
+    for (size_t i = 0; i < pages; i++) {
+        size_t off = i * TD_FD_PAGE_SIZE;
+        size_t n = MIN(TD_FD_PAGE_SIZE, (size_t)cryptsize - off);
+        vm_size_t got = 0;
+        kern_return_t kr = vm_read_overwrite(mach_task_self(),
+                                             (vm_address_t)(cryptBase + off), (vm_size_t)n,
+                                             (vm_address_t)(outBuf + off), &got);
+        if (kr != KERN_SUCCESS || got != n) {
+            FDLOG(@"mode(cryptid=%u exec=%d sigs=%d): vm_read_overwrite page %zu failed: kr=%d",
+                  cryptid, useExec ? 1 : 0, addSigs ? 1 : 0, i, kr);
+            munmap(base, mapLen);
+            return -1;
+        }
+    }
+
+    if (memcmp(outBuf, origBuf, cryptsize) == 0) {
+        FDLOG(@"mode(cryptid=%u exec=%d sigs=%d): pages unchanged; not decrypted",
+              cryptid, useExec ? 1 : 0, addSigs ? 1 : 0);
+        munmap(base, mapLen);
+        return -1;
+    }
+
+    FDLOG(@"mode(cryptid=%u exec=%d sigs=%d): SUCCESS", cryptid, useExec ? 1 : 0, addSigs ? 1 : 0);
+    munmap(base, mapLen);
+    return 0;
+}
+
+// ---------------------------------------------------------------------------
 // Decrypt one encrypted region of a Mach-O slice (ported from unprotect()).
 // ---------------------------------------------------------------------------
-static int td_fd_unprotect(int f, uint8_t *dupe, int cpuType, int cpuSubType,
-                           struct encryption_info_command *info, size_t machoOff) {
+static int td_fd_unprotect(int f, uint8_t *inputData, uint8_t *dupe, int cpuType, int cpuSubType,
+                           struct encryption_info_command *info, size_t machoOff,
+                           uint32_t csOff, uint32_t csSize) {
     // mremap_encrypted requires the input address to be 4K aligned.
     if ((info->cryptoff & (TD_FD_EXEC_PAGE_SIZE - 1)) != 0) {
         FDLOG(@"cryptoff 0x%x is not 4K aligned; cannot decrypt", info->cryptoff);
@@ -219,32 +261,49 @@ static int td_fd_unprotect(int f, uint8_t *dupe, int cpuType, int cpuSubType,
           info->cryptoff, info->cryptsize, info->cryptid, cpuType, cpuSubType);
 
     size_t offAligned = info->cryptoff & ~(TD_FD_PAGE_SIZE - 1);
-    void *decryptedBuf = malloc(info->cryptsize);
+    uint8_t *decryptedBuf = (uint8_t *)malloc(info->cryptsize);
     if (!decryptedBuf) {
         FDLOG(@"malloc(%u) failed", info->cryptsize);
         return 1;
     }
+    const uint8_t *origBuf = inputData + info->cryptoff;
 
     if ((info->cryptoff & (TD_FD_PAGE_SIZE - 1)) == 0) {
-        // Fast path: the encrypted range is already 16K aligned.
-        FDLOG(@"cryptoff is 16K aligned; calling mremap_encrypted directly");
-        void *cryptbase = td_fd_mmap(NULL, info->cryptsize, PROT_READ | PROT_EXEC,
-                                     MAP_PRIVATE, f, (size_t)info->cryptoff + machoOff);
-        if (cryptbase == MAP_FAILED) {
+        // 16K-aligned: try the modern cryptid=2 (PROT_READ-only) path first.
+        // The cryptid=1/PROT_EXEC "what dyld does" modes are kept as fallbacks.
+        struct {
+            uint32_t cryptid;
+            bool useExec;
+            bool addSigs;
+        } modes[] = {
+            { 2, false, false },
+#ifdef F_ADDFILESIGS_RETURN
+            { 2, false, true  },
+#endif
+            { 1, true,  false },
+#ifdef F_ADDFILESIGS_RETURN
+            { 1, true,  true  },
+#endif
+        };
+        bool ok = false;
+        for (size_t i = 0; i < sizeof(modes) / sizeof(modes[0]); i++) {
+            if (td_fd_attemptDecrypt(f, machoOff, info->cryptoff, info->cryptsize,
+                                     csOff, csSize,
+                                     modes[i].cryptid, modes[i].useExec, modes[i].addSigs,
+                                     (uint32_t)cpuType, (uint32_t)cpuSubType,
+                                     decryptedBuf, origBuf) == 0) {
+                ok = true;
+                break;
+            }
+        }
+        if (!ok) {
             free(decryptedBuf);
             return 1;
         }
-        if (td_fd_mremapEncrypted(cryptbase, info->cryptsize, info->cryptid,
-                                  cpuType, cpuSubType)) {
-            munmap(cryptbase, info->cryptsize);
-            free(decryptedBuf);
-            return 1;
-        }
-        memmove(decryptedBuf, cryptbase, info->cryptsize);
-        munmap(cryptbase, info->cryptsize);
     } else {
         // Slow path: cryptoff is only 4K aligned. Patch the pager backing the
         // 16K-aligned mapping so mremap_encrypted decrypts from the right bytes.
+        // Use cryptid=2 + PROT_READ so the VM layer does not require PROT_EXEC.
         FDLOG(@"cryptoff is NOT 16K aligned; using kerninfra pager patch");
         if (td_fd_prepareKernel()) {
             FDLOG(@"kerninfra unavailable; cannot decrypt unaligned cryptoff");
@@ -264,15 +323,14 @@ static int td_fd_unprotect(int f, uint8_t *dupe, int cpuType, int cpuSubType,
                                ? (size_t)info->cryptoff - off : 0;
             size_t cryptOff = off + inPageStart;
 
-            char *cryptbase = (char *)td_fd_mmap(NULL, curMapLen, PROT_READ | PROT_EXEC,
+            char *cryptbase = (char *)td_fd_mmap(NULL, curMapLen, PROT_READ,
                                                  MAP_PRIVATE, f, off + machoOff);
             if (cryptbase == MAP_FAILED) {
                 free(decryptedBuf);
                 return 1;
             }
 
-            if (td_fd_mremapEncrypted(cryptbase, curMapLen, info->cryptid,
-                                      cpuType, cpuSubType)) {
+            if (td_fd_mremapEncrypted(cryptbase, curMapLen, 2, cpuType, cpuSubType)) {
                 munmap(cryptbase, curMapLen);
                 free(decryptedBuf);
                 return 1;
@@ -346,13 +404,19 @@ static int td_fd_decryptMachoSlice(int f, uint8_t *inputData, uint8_t *outputDat
     }
 
     struct encryption_info_command *encryptionInfo = NULL;
+    uint32_t csOff = 0, csSize = 0;
+    uint32_t cmdOffset = offset;
     for (uint32_t i = 0; i < (uint32_t)ncmds; i++) {
-        struct load_command *command = (struct load_command *)(inputData + offset);
+        struct load_command *command = (struct load_command *)(inputData + cmdOffset);
         if (command->cmd == LC_ENCRYPTION_INFO || command->cmd == LC_ENCRYPTION_INFO_64) {
             encryptionInfo = (struct encryption_info_command *)command;
-            break;
+            offset = cmdOffset;  // keep offset pointing at LC_ENCRYPTION_INFO for the output patch
+        } else if (command->cmd == LC_CODE_SIGNATURE) {
+            struct linkedit_data_command *lc = (struct linkedit_data_command *)command;
+            csOff = lc->dataoff;
+            csSize = lc->datasize;
         }
-        offset += command->cmdsize;
+        cmdOffset += command->cmdsize;
     }
 
     if (!encryptionInfo || !encryptionInfo->cryptid) {
@@ -360,7 +424,8 @@ static int td_fd_decryptMachoSlice(int f, uint8_t *inputData, uint8_t *outputDat
         return 0;
     }
 
-    if (td_fd_unprotect(f, outputData, cpuType, cpuSubType, encryptionInfo, machoOff) != 0) {
+    if (td_fd_unprotect(f, inputData, outputData, cpuType, cpuSubType, encryptionInfo,
+                        machoOff, csOff, csSize) != 0) {
         FDLOG(@"failed to decrypt slice at 0x%zx", machoOff);
         return 1;
     }
@@ -377,11 +442,14 @@ static int td_fd_decryptMachoSlice(int f, uint8_t *inputData, uint8_t *outputDat
 // Decrypt a whole Mach-O file (thin or fat) (ported from decrypt_macho()).
 // ---------------------------------------------------------------------------
 static int td_fd_decryptMachO(const char *inputFile, const char *outputFile) {
-    // mremap_encrypted() needs the encrypted pager initialised by at least one
-    // prior exec of this Mach-O. Prime it before touching the file. Safe to
-    // call repeatedly; the child aborts immediately and is reaped.
-    FDLOG(@"priming encrypted pager for: %s", inputFile);
-    td_fd_primeEncryptedBinary(inputFile);
+    // fairplayd locates the licence via <bundle>/SC_Info/<name>.sinf next to the
+    // input binary. Log its presence so a remaining EPERM is easy to interpret.
+    NSString *inPath = [NSString stringWithUTF8String:inputFile];
+    NSString *sinfPath = [[inPath stringByDeletingLastPathComponent]
+        stringByAppendingPathComponent:
+            [NSString stringWithFormat:@"SC_Info/%@.sinf", [inPath lastPathComponent]]];
+    FDLOG(@"licence: %@ (exists=%d)", sinfPath,
+          [[NSFileManager defaultManager] fileExistsAtPath:sinfPath] ? 1 : 0);
 
     FDLOG(@"mapping input: %s", inputFile);
     size_t baseSize = 0;
@@ -426,6 +494,14 @@ static int td_fd_decryptMachO(const char *inputFile, const char *outputFile) {
                 (size_t)archOffset + sizeof(uint32_t) > baseSize) {
                 FDLOG(@"fat arch %u is out of bounds", i);
                 result = 1;
+                continue;
+            }
+            // iOS 15 only runs arm64; 32-bit slices cannot be FairPlay-decrypted
+            // here (mremap_encrypted has no 32-bit backend) and must not make the
+            // whole image fail when the arm64 slice decrypts correctly.
+            uint32_t archCpu = fatInt(arch->cputype);
+            if (!(archCpu & CPU_ARCH_ABI64)) {
+                FDLOG(@"skipping 32-bit fat arch %u (cpu=0x%x)", i, archCpu);
                 continue;
             }
             if (td_fd_decryptMachoSlice(f, base + archOffset, dupe + archOffset, archOffset) != 0) {
