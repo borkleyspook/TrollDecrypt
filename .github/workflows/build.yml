@@ -4,10 +4,17 @@ on:
   push:
     branches:
       - '**'
+    tags:
+      - 'v*'
   pull_request:
     branches:
       - '**'
   workflow_dispatch:
+    inputs:
+      release_tag:
+        description: 'Publish a release with this tag (e.g. v1.2.4). Leave blank for a build-only run.'
+        required: false
+        type: string
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -23,6 +30,8 @@ env:
 jobs:
   build:
     runs-on: macos-latest
+    permissions:
+      contents: write # required to create/update GitHub Releases
 
     steps:
       - name: Checkout
@@ -74,9 +83,81 @@ jobs:
       - name: List artifacts
         run: ls -lh dist/
 
-      - name: Upload artifacts
+      - name: Upload workflow artifacts
         uses: actions/upload-artifact@v4
         with:
           name: TrollDecrypt
           path: dist/*
           if-no-files-found: error
+
+      # Releases are published only for version tags (v*) or when a tag is
+      # supplied manually via workflow_dispatch. Ordinary branch pushes and
+      # pull requests just produce workflow artifacts, as before.
+      - name: Resolve release metadata
+        id: meta
+        if: startsWith(github.ref, 'refs/tags/v') || (github.event_name == 'workflow_dispatch' && inputs.release_tag != '')
+        run: |
+          version="$(awk -F': ' '/^Version:/ {gsub(/\r/, "", $2); print $2; exit}' control)"
+          if [ -z "$version" ]; then echo "Could not read Version from control" >&2; exit 1; fi
+          tag="${{ inputs.release_tag }}"
+          if [ -z "$tag" ]; then tag="${GITHUB_REF_NAME}"; fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "Publishing $tag (package version $version)"
+
+      - name: Publish GitHub Release
+        if: startsWith(github.ref, 'refs/tags/v') || (github.event_name == 'workflow_dispatch' && inputs.release_tag != '')
+        uses: softprops/action-gh-release@v3
+        with:
+          tag_name: ${{ steps.meta.outputs.tag }}
+          name: TrollDecrypt ${{ steps.meta.outputs.version }}
+          files: |
+            dist/*.deb
+            dist/*.tipa
+          fail_on_unmatched_files: true
+          generate_release_notes: true
+          body: |
+            ## TrollDecrypt ${{ steps.meta.outputs.version }}
+
+            Decrypt App Store apps on iOS — as a `.deb` for jailbroken devices
+            (with the FoulDecrypt static FairPlay engine) or as a `.tipa` for
+            TrollStore. Every file attached here was compiled from source by
+            this repository's GitHub Actions workflow; the workflow artifacts
+            contain exactly the same files.
+
+            ### Pick the right download
+
+            | Asset (filename ends with) | Install on | Details |
+            | --- | --- | --- |
+            | `_iphoneos-arm.deb` | Rootful jailbreaks | Full FoulDecrypt entitlements |
+            | `_iphoneos-arm64.deb` | Rootless jailbreaks (Dopamine, etc.) | Full FoulDecrypt entitlements; arm64 only |
+            | `TrollDecrypt.tipa` | TrollStore | Reduced entitlements required by TrollStore re-signing |
+
+            ### Highlights of this build
+
+            - **Static FairPlay decryption** using `mremap_encrypted` with
+              `cryptid=2` and a read-only mapping. Apps that cannot be launched
+              can still be decrypted — no execution or `PROT_EXEC` required.
+            - **kerninfra kernel R/W** for the unaligned `cryptoff` path, loaded
+              at runtime via `dlopen` of libkrw (no libkrw load command in the
+              Mach-O, so the TrollStore build stays valid).
+            - **32-bit FAT slices are skipped**; the arm64 slice is decrypted.
+            - **TrollStore launch fix** via a separate entitlement set
+              (`TrollDecrypt.tipa.entitlements`).
+            - **Post-decryption crash fix** — no longer self-signals when the
+              target app never launched (pid 0).
+
+            ### Installation
+
+            - **Rootful/rootless:** install the matching `.deb` with your package
+              manager (Sileo, Zebra, `dpkg`). Respring if the icon does not appear.
+            - **TrollStore:** open `TrollDecrypt.tipa` with TrollStore and install.
+
+            ### Requirements
+
+            - iOS 14.0+ on an arm64 device (tested on iOS 15.5 / Dopamine).
+            - The `.deb` builds need libkrw installed for the kernel-assisted
+              path; the `cryptid=2` path itself needs no kernel patching.
+            - Only decrypt apps you are licensed to use.
+
+            Auto-generated commit notes for this tag follow below.
