@@ -251,12 +251,7 @@ static inline NSUInteger getEffectiveIconFormat(void) {
 
     [decryptionTask executeWithCompletionHandler:^(BOOL success, NSURL *outputURL, NSError *error) {
         dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.5 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-            if (_progressAlert) {
-                [_progressAlert dismissViewControllerAnimated:YES completion:^{
-                    _progressAlert = nil;
-                }];
-            }
-
+            void (^presentResult)(void) = ^{
             UIAlertController *resultAlert;
             if (success) {
                 resultAlert = [UIAlertController alertControllerWithTitle:[Localize localizedStringForKey:@"SUCCESS"] message:[Localize localizedStringForKey:@"DECRYPTION_COMPLETED"] preferredStyle:UIAlertControllerStyleAlert];
@@ -283,6 +278,18 @@ static inline NSUInteger getEffectiveIconFormat(void) {
             NSString *closeTitle = success ? [Localize localizedStringForKey:@"DISMISS"] : [Localize localizedStringForKey:@"OK"];
             [resultAlert addAction:[UIAlertAction actionWithTitle:closeTitle style:UIAlertActionStyleDefault handler:nil]];
             [self presentViewController:resultAlert animated:YES completion:nil];
+            };
+
+            // Present the result only AFTER the progress alert finishes
+            // dismissing. Presenting while a dismissal is still in flight
+            // raises NSInternalInconsistencyException ("already presenting").
+            UIAlertController *progressAlert = _progressAlert;
+            _progressAlert = nil;
+            if (progressAlert) {
+                [progressAlert dismissViewControllerAnimated:YES completion:presentResult];
+            } else {
+                presentResult();
+            }
         });
     } options:options];
 }

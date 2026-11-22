@@ -66,8 +66,14 @@ TDDecryptionTaskOptions TDDecryptionTaskDefaultOptions(void) {
         progress([Localize localizedStringForKey:@"LAUNCHING_APPLICATION"]);
 
         LaunchdResponse_t response = [self->_applicationProxy td_launchProcess];
-        if (response.pid == -1) {
-            NSLog(@"Failed to launch application %@", bundleIdentifier);
+        NSLog(@"launch response: %@", NSStringFromLaunchdResponse(response));
+        // An app that cannot be launched returns pid 0 (no "pid" key in the
+        // launchd reply), not always -1. Do NOT bail here: FoulDecrypt decrypts
+        // statically from disk and does not need a running process. We only need
+        // to know the pid so we can clean it up later, and kill(0, SIGKILL)
+        // would signal our own process group and kill TrollDecrypt.
+        if (response.pid < 0) {
+            NSLog(@"Failed to launch application %@ (pid=%d)", bundleIdentifier, response.pid);
             NSError *launchError = [TDError errorWithCode:TDErrorCodeLaunchFailed];
             dispatch_async(dispatch_get_main_queue(), ^{
                 if (completionHandler) completionHandler(NO, nil, launchError);
@@ -116,7 +122,9 @@ TDDecryptionTaskOptions TDDecryptionTaskDefaultOptions(void) {
         }
 
         if (options.decryptBinaryOnly) {
-            kill(targetPID, SIGKILL);
+            // pid 0 means the app never launched (FoulDecrypt still works).
+            // kill(0, SIGKILL) would kill our own process group.
+            if (targetPID > 0) kill(targetPID, SIGKILL);
             progress([Localize localizedStringForKey:@"DECRYPTION_COMPLETED"]);
 
             dispatch_async(dispatch_get_main_queue(), ^{
@@ -169,7 +177,7 @@ TDDecryptionTaskOptions TDDecryptionTaskDefaultOptions(void) {
                 NSLog(@"Failed to decrypt main executable for extension %@", extension.bundleIdentifier);
             }
 
-            kill(extensionResponse.pid, SIGKILL);
+            if (extensionResponse.pid > 0) kill(extensionResponse.pid, SIGKILL);
         }
 
         progress([Localize localizedStringForKey:@"BUILDING_IPA"]);
@@ -185,7 +193,9 @@ TDDecryptionTaskOptions TDDecryptionTaskDefaultOptions(void) {
             return;
         }
 
-        kill(targetPID, SIGKILL);
+        // pid 0 means the app never launched (FoulDecrypt still works).
+        // kill(0, SIGKILL) would kill our own process group.
+        if (targetPID > 0) kill(targetPID, SIGKILL);
         progress([Localize localizedStringForKey:@"DECRYPTION_COMPLETED"]);
 
         NSString *ipaPath = [ROOT_OUTPUT_PATH stringByAppendingPathComponent:outputIPAName];
